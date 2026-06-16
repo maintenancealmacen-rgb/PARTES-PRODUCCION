@@ -3410,7 +3410,7 @@ async function submitParte() {
 
   // Determinar hoja de destino según máquina
   const SHEET_MAP = { 'PR_03': 'PR03', 'PR_23': 'PR23', 'PR_24': 'PR23' };
-  const sheetName = SHEET_MAP[maq] || 'Partes';
+  const sheetName = SHEET_MAP[maq] || maq || 'Partes';
 
   const payload = {
     sheet: sheetName,
@@ -4045,7 +4045,7 @@ async function submitParteMode2() {
 
   const p2Maq = document.getElementById('p2-maquina').value;
   const SHEET_MAP_P2 = { 'PR_03': 'PR03', 'PR_23': 'PR23', 'PR_24': 'PR23' };
-  const p2SheetName = SHEET_MAP_P2[p2Maq] || 'Partes';
+  const p2SheetName = SHEET_MAP_P2[p2Maq] || p2Maq || 'Partes';
 
   const payload = {
     sheet: p2SheetName,
