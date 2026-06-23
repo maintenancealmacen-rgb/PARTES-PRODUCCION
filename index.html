@@ -45,6 +45,16 @@
   body.embed-mode .app-header { display: none !important; }
   body.embed-mode .tabs { position: static !important; }
   body.embed-mode .submit-area { position: static !important; margin-top: 16px; box-shadow: none; }
+  /* Evitar bucle de crecimiento infinito: estos contenedores usan calc(100vh - Npx),
+     pero dentro de un iframe cuyo alto lo fija el propio JS de auto-resize, eso crea
+     una dependencia circular (cuanto más crece, más exige crecer). En modo embed,
+     que se ajusten siempre a su contenido real. */
+  body.embed-mode .desktop-layout,
+  body.embed-mode .desktop-sidebar,
+  body.embed-mode #welcome-screen {
+    height: auto !important;
+    min-height: 0 !important;
+  }
 
 
   /* MANO SELECTION SCREEN (PR23 / PR24) */
@@ -252,7 +262,8 @@
     min-height: 200px;
     height: auto;
     display: block;
-    overflow: hidden;
+    overflow-y: auto;
+    overflow-x: hidden;
   }
   @media (min-width: 1024px) {
     #pr03-triple-view { gap: 10px; padding: 10px 12px; }
@@ -1317,9 +1328,10 @@
         </div>
         <div class="field">
           <label>Referencia de Pieza</label>
-          <select id="referencia" onchange="onReferenciaChange()">
+          <select id="referencia" onchange="onReferenciaSelectMaybeManual('referencia', onReferenciaChange)">
             <option value="">— Seleccionar referencia —</option>
           </select>
+          <input type="text" id="referencia-custom" placeholder="Escribe la referencia aquí…" style="display:none;margin-top:8px;" oninput="refCustomInput('referencia')">
         </div>
         <div class="field" id="field-num_orden2" style="display:none;">
           <label>Nº Orden de Producción 2 <span style="color:#ff1744">*</span></label>
@@ -1327,9 +1339,10 @@
         </div>
         <div class="field" id="field-referencia2" style="display:none;">
           <label>Referencia de Pieza 2 <span style="color:#ff1744">*</span></label>
-          <select id="referencia2" onchange="onReferenciaChange()">
+          <select id="referencia2" onchange="onReferenciaSelectMaybeManual('referencia2', onReferenciaChange)">
             <option value="">— Seleccionar referencia 2 —</option>
           </select>
+          <input type="text" id="referencia2-custom" placeholder="Escribe la referencia aquí…" style="display:none;margin-top:8px;" oninput="refCustomInput('referencia2')">
         </div>
       </div>
     </div>
@@ -1601,9 +1614,10 @@
           </div>
           <div class="field">
             <label>Referencia — IZQ</label>
-            <select id="p2-referencia-izq" onchange="p2OnReferenciaChange('izq')">
+            <select id="p2-referencia-izq" onchange="onReferenciaSelectMaybeManual('p2-referencia-izq', () => p2OnReferenciaChange('izq'))">
               <option value="">— Seleccionar —</option>
             </select>
+            <input type="text" id="p2-referencia-izq-custom" placeholder="Escribe la referencia aquí…" style="display:none;margin-top:8px;" oninput="refCustomInput('p2-referencia-izq')">
           </div>
         </div>
       </div>
@@ -1618,9 +1632,10 @@
           </div>
           <div class="field">
             <label>Referencia — DCHA</label>
-            <select id="p2-referencia-dcha" onchange="p2OnReferenciaChange('dcha')">
+            <select id="p2-referencia-dcha" onchange="onReferenciaSelectMaybeManual('p2-referencia-dcha', () => p2OnReferenciaChange('dcha'))">
               <option value="">— Seleccionar —</option>
             </select>
+            <input type="text" id="p2-referencia-dcha-custom" placeholder="Escribe la referencia aquí…" style="display:none;margin-top:8px;" oninput="refCustomInput('p2-referencia-dcha')">
           </div>
         </div>
       </div>
@@ -2206,6 +2221,7 @@ function launchTripleView() {
     document.getElementById('pr23-mano-screen').style.display = 'none';
     document.getElementById('pr24-mano-screen').style.display = 'none';
     document.getElementById('desktop-layout-wrap').style.display = 'none';
+    document.getElementById('nav-area').classList.remove('visible');
     const view = document.getElementById('pr03-triple-view');
     view.style.display = 'flex';
     view.innerHTML = '';
@@ -2248,7 +2264,7 @@ function launchTripleView() {
       col.innerHTML =
         '<div class="pr03-col-header" style="background:' + p.color + '">' +
         '<span>' + p.icon + '</span> ' + p.op + '</div>' +
-        '<iframe class="pr03-iframe" scrolling="no" src="' + location.pathname +
+        '<iframe class="pr03-iframe" src="' + location.pathname +
         '?embed=1&shared=1&maq=' + encodeURIComponent(cfg.maq) +
         '&op=' + encodeURIComponent(p.op) +
         '&hide_cont=' + hideCont + manoParam + '"></iframe>';
@@ -3047,6 +3063,8 @@ function onMaquinaChange() {
   const sel2 = document.getElementById('referencia2');
   sel.innerHTML = '<option value="">\u2014 Seleccionar referencia \u2014</option>';
   sel2.innerHTML = '<option value="">\u2014 Seleccionar referencia 2 \u2014</option>';
+  hideRefCustomInput('referencia');
+  hideRefCustomInput('referencia2');
   if (maq && DB[maq]) {
     DB[maq].forEach(r => {
       const makeOpt = () => {
@@ -3065,11 +3083,89 @@ function onMaquinaChange() {
       sel2.appendChild(makeOpt());
     });
   }
+  addManualRefOption(sel);
+  addManualRefOption(sel2);
   if (maq && MAQUINAS_BASCULA_RECORDATORIO.includes(maq)) {
     showPesoReminder(maq);
   }
   updateRef2Visibility();
   onReferenciaChange();
+}
+
+// ═══════════════════════════════════════════
+// REFERENCIA MANUAL (introducida a mano)
+// ═══════════════════════════════════════════
+// Oculta y limpia el input de texto manual asociado a un select de referencia
+// (se usa al cambiar de máquina, momento en que la referencia deja de ser válida).
+function hideRefCustomInput(selId) {
+  const custom = document.getElementById(selId + '-custom');
+  if (custom) {
+    custom.style.display = 'none';
+    custom.value = '';
+  }
+}
+
+// Añade al final de un <select> de referencia la opción para introducirla manualmente,
+// si todavía no está presente.
+function addManualRefOption(sel) {
+  if (!sel) return;
+  if (Array.from(sel.options).some(o => o.value === '__manual__')) return;
+  const opt = document.createElement('option');
+  opt.value = '__manual__';
+  opt.textContent = '✏️ Introducir referencia manualmente…';
+  sel.appendChild(opt);
+}
+
+// Se llama desde el onchange de cada <select> de referencia que soporta entrada manual.
+// selId: id del <select> (p.ej. 'referencia', 'referencia2', 'p2-referencia-izq', 'p2-referencia-dcha')
+function onReferenciaSelectMaybeManual(selId, callback) {
+  const sel = document.getElementById(selId);
+  const custom = document.getElementById(selId + '-custom');
+  if (!sel) return;
+  if (sel.value === '__manual__') {
+    if (custom) {
+      custom.style.display = 'block';
+      custom.focus();
+    }
+  } else {
+    if (custom) {
+      custom.style.display = 'none';
+      custom.value = '';
+    }
+  }
+  if (typeof callback === 'function') callback();
+}
+
+// Se llama mientras el usuario escribe en el input de texto manual.
+// Crea (si no existe) o actualiza la opción correspondiente del <select> con el texto
+// introducido, y la deja seleccionada, para que el resto del código (que lee sel.value)
+// siga funcionando exactamente igual que con una referencia de la base de datos.
+function refCustomInput(selId) {
+  const sel = document.getElementById(selId);
+  const custom = document.getElementById(selId + '-custom');
+  if (!sel || !custom) return;
+  const texto = custom.value.trim();
+
+  let manualOpt = sel.querySelector('option[data-manual="1"]');
+  if (!manualOpt) {
+    manualOpt = document.createElement('option');
+    manualOpt.dataset.manual = '1';
+    const placeholderOpt = sel.querySelector('option[value="__manual__"]');
+    if (placeholderOpt) sel.insertBefore(manualOpt, placeholderOpt);
+    else sel.appendChild(manualOpt);
+  }
+  manualOpt.value = texto;
+  manualOpt.textContent = texto ? ('✏️ ' + texto) : '✏️ (referencia manual vacía)';
+  sel.value = texto;
+
+  // Disparar la lógica habitual asociada a cada select
+  if (selId === 'referencia' || selId === 'referencia2') {
+    onReferenciaChange();
+  } else if (selId === 'p2-referencia-izq') {
+    p2OnReferenciaChange('izq');
+  } else if (selId === 'p2-referencia-dcha') {
+    p2OnReferenciaChange('dcha');
+  }
 }
 
 function updateRef2Visibility() {
@@ -3369,8 +3465,6 @@ async function submitParte() {
   const hor = getHorariosData()[0] || {};
   if (!hor.hora_inicio_turno) { showToast('⚠️ Falta Hora Inicio Turno del operario 1', 'error'); return; }
   if (!hor.hora_fin_turno)    { showToast('⚠️ Falta Hora Fin Turno del operario 1', 'error'); return; }
-  if (!hor.hora_inicio_descanso) { showToast('⚠️ Falta Hora Inicio Descanso del operario 1', 'error'); return; }
-  if (!hor.hora_fin_descanso)    { showToast('⚠️ Falta Hora Fin Descanso del operario 1', 'error'); return; }
   // Control piezas (etiqueta inicio/fin)
   if (!document.getElementById('etiq_inicio').value) { showToast('⚠️ Falta Nº Etiqueta Inicio (control contenedores)', 'error'); return; }
   if (!document.getElementById('etiq_fin').value)    { showToast('⚠️ Falta Nº Etiqueta Fin (control contenedores)', 'error'); return; }
@@ -3568,6 +3662,8 @@ function p2GetMaterialesData() {
 // Máquina / referencias modo 2
 function p2OnMaquinaChange() {
   const maq = document.getElementById('p2-maquina').value;
+  hideRefCustomInput('p2-referencia-izq');
+  hideRefCustomInput('p2-referencia-dcha');
   ['p2-referencia-izq', 'p2-referencia-dcha'].forEach(selId => {
     const sel = document.getElementById(selId);
     sel.innerHTML = '<option value="">— Seleccionar —</option>';
@@ -3584,6 +3680,7 @@ function p2OnMaquinaChange() {
         sel.appendChild(opt);
       });
     }
+    addManualRefOption(sel);
   });
   p2AdaptContenedorSide('izq');
   p2AdaptContenedorSide('dcha');
@@ -4009,8 +4106,6 @@ async function submitParteMode2() {
   const p2Hor = p2GetHorariosData()[0] || {};
   if (!p2Hor.hora_inicio_turno) { showToast('⚠️ Falta Hora Inicio Turno del operario 1', 'error'); return; }
   if (!p2Hor.hora_fin_turno)    { showToast('⚠️ Falta Hora Fin Turno del operario 1', 'error'); return; }
-  if (!p2Hor.hora_inicio_descanso) { showToast('⚠️ Falta Hora Inicio Descanso del operario 1', 'error'); return; }
-  if (!p2Hor.hora_fin_descanso)    { showToast('⚠️ Falta Hora Fin Descanso del operario 1', 'error'); return; }
   // Control contenedores modo 2
   if (!document.getElementById('p2-etiq_inicio_izq').value) { showToast('⚠️ Falta Nº Etiqueta Inicio IZQ', 'error'); return; }
   if (!document.getElementById('p2-etiq_fin_izq').value)    { showToast('⚠️ Falta Nº Etiqueta Fin IZQ', 'error'); return; }
@@ -4029,11 +4124,20 @@ async function submitParteMode2() {
     if(mins>0){ paradasObj[`${p.code}_${p.name}`]=mins; paradasArr.push(`${p.code} ${p.name}: ${from}–${to} (${mins} min)`); }
   });
 
-  const defectos = {};
-  document.querySelectorAll('#p2-defect-list .defect-input').forEach((inp, idx) => {
+  const defectosIzq = {};
+  document.querySelectorAll('#p2-defect-list-izq .defect-input').forEach((inp, idx) => {
     const v = parseInt(inp.value) || 0;
-    if (v > 0) defectos[DEFECTOS[idx].name] = v;
+    if (v > 0) defectosIzq[DEFECTOS[idx].name] = v;
   });
+  const defectosDcha = {};
+  document.querySelectorAll('#p2-defect-list-dcha .defect-input').forEach((inp, idx) => {
+    const v = parseInt(inp.value) || 0;
+    if (v > 0) defectosDcha[DEFECTOS[idx].name] = v;
+  });
+  // Combinado (ambas manos), por compatibilidad con el resto del payload
+  const defectos = {};
+  Object.entries(defectosIzq).forEach(([k, v]) => { defectos[k] = (defectos[k] || 0) + v; });
+  Object.entries(defectosDcha).forEach(([k, v]) => { defectos[k] = (defectos[k] || 0) + v; });
 
   const ci = parseInt(document.getElementById('p2-contador_inicio').value);
   const cf = parseInt(document.getElementById('p2-contador_fin').value);
@@ -4078,10 +4182,14 @@ async function submitParteMode2() {
     piezas_etiq_fin_dcha: document.getElementById('p2-piezas_etiq_fin_dcha').value,
     piezas_buenas_dcha: document.getElementById('p2-piezas_buenas_dcha').value,
     piezas_nok: document.getElementById('p2-piezas_nok').value || '0',
+    piezas_nok_izq: document.getElementById('p2-piezas_nok_izq').value || '0',
+    piezas_nok_dcha: document.getElementById('p2-piezas_nok_dcha').value || '0',
     jefe_turno: document.getElementById('p2-jefe_turno').value,
     control_calidad: document.getElementById('p2-control_calidad').value,
     paradas: paradasArr.join(' | '),
     defectos: JSON.stringify(defectos),
+    defectos_izq: JSON.stringify(defectosIzq),
+    defectos_dcha: JSON.stringify(defectosDcha),
     paradas_detalle: JSON.stringify(paradasObj),
     autocontrol: JSON.stringify(p2GetAutocontrolData()),
     pokayoke_izq: document.getElementById('p2-pokayoke-izq').value || '',
@@ -4246,6 +4354,11 @@ function operacionSelectChange(selectId, hiddenId, customId) {
 
 window.addEventListener('resize', () => {
   if (document.getElementById('welcome-screen').style.display === 'none') {
+    // Si estamos en la vista triple (PR03/PR23/PR24), no reactivar el layout
+    // del formulario normal: eso lo dejaba visible "por detrás" con su propio
+    // botón Enviar y su campo Fecha vacío, causando el error "Campo requerido: Fecha".
+    const triple = document.getElementById('pr03-triple-view');
+    if (triple && triple.style.display !== 'none') return;
     applyDesktopLayout();
     if (isDesktop()) updateSidebarMode(selectedMode);
   }
@@ -4278,6 +4391,9 @@ window.addEventListener('resize', () => {
     document.addEventListener('input', () => setTimeout(reportHeight, 100));
     document.addEventListener('change', () => setTimeout(reportHeight, 100));
     setTimeout(reportHeight, 500);
+    setTimeout(reportHeight, 1000);
+    setTimeout(reportHeight, 2000);
+    setTimeout(reportHeight, 3500);
 
     selectMode(1);
     startForm();
